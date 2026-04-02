@@ -839,20 +839,30 @@ class VirtualParticle:
             simulatedVector = (simulatedVectorSum * (1.0/len(self.children))).normalized()
         animPoseToPhysicsPose = cachedAnimatedVector.rotation_difference(simulatedVector).slerp(IDENTITY_QUAT, 1-self.jiggle_settings.blend).normalized()
 
+        ref_mode = get_reference_rest_bone(self.bone) is not None
+
         loc, rot, scale = self.rest_bone.matrix.decompose()
-        if self.bone.bone.use_inherit_rotation:
-            prot = self.parent.rolling_error.inverted().slerp(IDENTITY_QUAT, 1-self.jiggle_settings.blend)
+
+        if self.bone.bone.use_inherit_rotation and not ref_mode:
+            prot = self.parent.rolling_error.inverted().slerp(IDENTITY_QUAT, 1 - self.jiggle_settings.blend)
+            parent_rolling_error = self.parent.rolling_error
         else:
             prot = IDENTITY_QUAT
+            parent_rolling_error = IDENTITY_QUAT
 
+        parent_pose_aim = local_pose - (inverted_obj_matrix @ self.parent_pose)
+        adjusted_pose = (inverted_obj_matrix @ self.parent.working_position) + (parent_rolling_error @ parent_pose_aim)
+        diff = (inverted_obj_matrix @ self.working_position) - adjusted_pose
 
-        parent_pose_aim = local_pose - (inverted_obj_matrix@self.parent_pose) 
-        adjusted_pose = (inverted_obj_matrix@self.parent.working_position) + (self.parent.rolling_error@parent_pose_aim)
-        diff = (inverted_obj_matrix@self.working_position)-adjusted_pose
-
-        loc = loc + (prot@diff) * self.jiggle_settings.blend
-        self.bone.matrix = Matrix.Translation(loc) @ prot.to_matrix().to_4x4() @ animPoseToPhysicsPose.to_matrix().to_4x4() @ rot.to_matrix().to_4x4() @ Matrix.Diagonal(scale).to_4x4()
-        self.rolling_error = self.parent.rolling_error.slerp(IDENTITY_QUAT, self.jiggle_settings.blend)@animPoseToPhysicsPose
+        loc = loc + (prot @ diff) * self.jiggle_settings.blend
+        self.bone.matrix = (
+            Matrix.Translation(loc)
+            @ prot.to_matrix().to_4x4()
+            @ animPoseToPhysicsPose.to_matrix().to_4x4()
+            @ rot.to_matrix().to_4x4()
+            @ Matrix.Diagonal(scale).to_4x4()
+        )
+        self.rolling_error = parent_rolling_error.slerp(IDENTITY_QUAT, self.jiggle_settings.blend) @ animPoseToPhysicsPose
 
 def get_virtual_particles_obj(obj):
     global _jiggle_globals
