@@ -535,40 +535,17 @@ def get_jiggle_settings(bone, static=False):
         return JiggleSettings(1.0,1.0,1.0,0.0,0.0,bone.jiggle_blend,0.0,1.0,0.1)
     return JiggleSettings.from_bone(bone)
 
-def get_reference_rest_bone(bone):
-    ref_name = getattr(bone.jiggle, 'reference_rest_bone', '')
-    if not ref_name:
-        return None
-    if not bone.id_data or not bone.id_data.pose:
-        return None
-    ref_bone = bone.id_data.pose.bones.get(ref_name)
-    if ref_bone is None or ref_bone == bone:
-        return None
-    return ref_bone
-
-def get_rest_source_bone(bone):
-    ref_bone = get_reference_rest_bone(bone)
-    return ref_bone if ref_bone else bone
-
-def update_reference_rest_bone_prop(self, context):
-    global _jiggle_globals
-    _jiggle_globals.clear_per_object_caches()
-    _jiggle_globals.clear_per_frame_caches()
-    if context and context.area:
-        context.area.tag_redraw()
-
 class VirtualParticle:
     def read(self):
         self.obj_world_matrix = self.obj.matrix_world
         self.bone = self.obj.pose.bones[self.bone_name]
-        self.rest_bone = get_rest_source_bone(self.bone)
 
         match self.particleType:
             case 'normal':
                 self.position = self.bone.jiggle.position1.copy()
                 self.position_last = self.bone.jiggle.position_last1
                 self.rest_pose_position = self.bone.jiggle.rest_pose_position1
-                self.pose = (self.obj_world_matrix @ self.rest_bone.head)
+                self.pose = (self.obj_world_matrix@self.bone.head)
                 self.working_position = self.position.copy()
                 self.jiggle_settings = get_jiggle_settings(self.bone, self.static)
             case 'backProject':
@@ -576,8 +553,8 @@ class VirtualParticle:
                 self.position_last = self.bone.jiggle.position_last0
                 self.rest_pose_position = self.bone.jiggle.rest_pose_position0
                 self.jiggle_settings = STATIC_JIGGLE_SETTINGS
-                headpos = self.rest_bone.head
-                tailpos = self.rest_bone.tail
+                headpos = self.bone.head
+                tailpos = self.bone.tail
                 diff = (headpos-tailpos)
                 if diff.length < MERGE_BONE_THRESHOLD:
                     diff = diff.normalized()*MERGE_BONE_THRESHOLD*2
@@ -588,8 +565,8 @@ class VirtualParticle:
                 self.position = self.bone.jiggle.position2.copy()
                 self.position_last = self.bone.jiggle.position_last2
                 self.rest_pose_position = self.bone.jiggle.rest_pose_position2
-                headpos = self.rest_bone.head
-                tailpos = self.rest_bone.tail
+                headpos = self.bone.head
+                tailpos = self.bone.tail
                 diff = tailpos - headpos
                 if diff.length < MERGE_BONE_THRESHOLD:
                     diff = diff.normalized()*MERGE_BONE_THRESHOLD*2
@@ -743,15 +720,12 @@ class VirtualParticle:
             return
 
         if not self.parent.parent:
-            self.desired_constrain = self.working_position = self.working_position.lerp(
-                self.pose,
-                self.jiggle_settings.root_elasticity * self.jiggle_settings.root_elasticity
-            )
+            self.desired_constrain = self.working_position = self.working_position.lerp(self.pose, self.jiggle_settings.root_elasticity*self.jiggle_settings.root_elasticity)
 
-            headpos = self.rest_bone.head
-            tailpos = self.rest_bone.tail
-            diff = (headpos - tailpos)
-            self.parent.desired_constrain = self.desired_constrain + (self.obj_world_matrix.to_3x3() @ diff)
+            headpos = self.bone.head
+            tailpos = self.bone.tail
+            diff = (headpos-tailpos)
+            self.parent.desired_constrain = self.desired_constrain + (self.obj_world_matrix.to_3x3()@diff)
             return
 
         # constrain angle
@@ -839,30 +813,20 @@ class VirtualParticle:
             simulatedVector = (simulatedVectorSum * (1.0/len(self.children))).normalized()
         animPoseToPhysicsPose = cachedAnimatedVector.rotation_difference(simulatedVector).slerp(IDENTITY_QUAT, 1-self.jiggle_settings.blend).normalized()
 
-        ref_mode = get_reference_rest_bone(self.bone) is not None
-
-        loc, rot, scale = self.rest_bone.matrix.decompose()
-
-        if self.bone.bone.use_inherit_rotation and not ref_mode:
-            prot = self.parent.rolling_error.inverted().slerp(IDENTITY_QUAT, 1 - self.jiggle_settings.blend)
-            parent_rolling_error = self.parent.rolling_error
+        loc, rot, scale = self.bone.matrix.decompose()
+        if self.bone.bone.use_inherit_rotation:
+            prot = self.parent.rolling_error.inverted().slerp(IDENTITY_QUAT, 1-self.jiggle_settings.blend)
         else:
             prot = IDENTITY_QUAT
-            parent_rolling_error = IDENTITY_QUAT
 
-        parent_pose_aim = local_pose - (inverted_obj_matrix @ self.parent_pose)
-        adjusted_pose = (inverted_obj_matrix @ self.parent.working_position) + (parent_rolling_error @ parent_pose_aim)
-        diff = (inverted_obj_matrix @ self.working_position) - adjusted_pose
 
-        loc = loc + (prot @ diff) * self.jiggle_settings.blend
-        self.bone.matrix = (
-            Matrix.Translation(loc)
-            @ prot.to_matrix().to_4x4()
-            @ animPoseToPhysicsPose.to_matrix().to_4x4()
-            @ rot.to_matrix().to_4x4()
-            @ Matrix.Diagonal(scale).to_4x4()
-        )
-        self.rolling_error = parent_rolling_error.slerp(IDENTITY_QUAT, self.jiggle_settings.blend) @ animPoseToPhysicsPose
+        parent_pose_aim = local_pose - (inverted_obj_matrix@self.parent_pose) 
+        adjusted_pose = (inverted_obj_matrix@self.parent.working_position) + (self.parent.rolling_error@parent_pose_aim)
+        diff = (inverted_obj_matrix@self.working_position)-adjusted_pose
+
+        loc = loc + (prot@diff) * self.jiggle_settings.blend
+        self.bone.matrix = Matrix.Translation(loc) @ prot.to_matrix().to_4x4() @ animPoseToPhysicsPose.to_matrix().to_4x4() @ rot.to_matrix().to_4x4() @ Matrix.Diagonal(scale).to_4x4()
+        self.rolling_error = self.parent.rolling_error.slerp(IDENTITY_QUAT, self.jiggle_settings.blend)@animPoseToPhysicsPose
 
 def get_virtual_particles_obj(obj):
     global _jiggle_globals
@@ -954,11 +918,10 @@ def is_bone_animated(armature, bone_name):
     return False
 
 def reset_bone(b):
-    rest_bone = get_rest_source_bone(b)
-    head_pos = (rest_bone.id_data.matrix_world @ rest_bone.head)
-    tail_pos = (rest_bone.id_data.matrix_world @ rest_bone.tail)
+    head_pos = (b.id_data.matrix_world@b.head)
+    tail_pos = (b.id_data.matrix_world@b.tail)
 
-    b.jiggle.rest_pose_position0 = b.jiggle.position0 = b.jiggle.position_last0 = head_pos + (head_pos - tail_pos)
+    b.jiggle.rest_pose_position0 = b.jiggle.position0 = b.jiggle.position_last0 = head_pos + (head_pos-tail_pos)
     b.jiggle.rest_pose_position1 = b.jiggle.position1 = b.jiggle.position_last1 = head_pos
     b.jiggle.rest_pose_position2 = b.jiggle.position2 = b.jiggle.position_last2 = tail_pos
 
@@ -1276,7 +1239,6 @@ class ARMATURE_OT_JiggleCopy(Operator):
             other_bone.jiggle_blend = bone.jiggle_blend
             other_bone.jiggle_air_drag = bone.jiggle_air_drag
             other_bone.jiggle_friction = bone.jiggle_friction
-            other_bone.jiggle.reference_rest_bone = bone.jiggle.reference_rest_bone
         return {'FINISHED'}
 
 def jiggle_reset(context):
@@ -1891,15 +1853,6 @@ class JIGGLE_PT_Bone(JigglePanel,Panel):
         col = layout.column(align=True)
         drawprops(col,b,['jiggle_collision_radius'])
         layout.operator(ANIM_OT_JiggleClearKeyframes.bl_idname)
-        
-        row = col.row()
-        row.prop_search(
-            b.jiggle,
-            'reference_rest_bone',
-            context.object.pose,
-            'bones',
-            text='Reference Rest Bone'
-        )
 
 class JIGGLE_PT_Utilities(JigglePanel,Panel):
     bl_label = 'Global Jiggle Utilities'
@@ -2026,14 +1979,6 @@ class JiggleBone(PropertyGroup):
     position2: FloatVectorProperty(subtype='TRANSLATION', override={'LIBRARY_OVERRIDABLE'})
     position_last2: FloatVectorProperty(subtype='TRANSLATION', override={'LIBRARY_OVERRIDABLE'})
     rest_pose_position2: FloatVectorProperty(subtype='TRANSLATION', override={'LIBRARY_OVERRIDABLE'})
-
-    reference_rest_bone: StringProperty(
-        name='Reference Rest Bone',
-        description='Optional pose bone that supplies the rest pose used by jiggle physics',
-        default='',
-        override={'LIBRARY_OVERRIDABLE'},
-        update=lambda s, c: update_reference_rest_bone_prop(s, c),
-    )
 
     enable: BoolProperty(
         name = 'Enable Bone Jiggle',
